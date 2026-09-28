@@ -1,0 +1,57 @@
+package internal
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type PgxTxManager struct {
+	pool *pgxpool.Pool
+}
+
+func NewPgxTxManager(pool *pgxpool.Pool) *PgxTxManager {
+	return &PgxTxManager{pool: pool}
+}
+
+type txKey struct{}
+
+func (txm *PgxTxManager) Do(ctx context.Context, fn func(ctx context.Context) error) error {
+
+	_, ok := ctx.Value(txKey{}).(pgx.Tx)
+	if ok {
+		return fn(ctx)
+	}
+	tr, err := txm.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return fmt.Errorf("pgx.TxManager.Begin: %w", err)
+	}
+
+	defer func() {
+		p := recover()
+		if p != nil {
+			var _ = tr.Rollback(ctx)
+			panic(p)
+		}
+	}()
+
+	err = fn(context.WithValue(ctx, txKey{}, tr))
+	if err != nil {
+		rbErr := tr.Rollback(ctx)
+		if rbErr != nil {
+			return errors.Join(
+				fmt.Errorf("pgx.TxManager: functions error : %w", err),
+				fmt.Errorf("pgx.TxManager.Rollback failed: %w", rbErr),
+			)
+		}
+		return fmt.Errorf("pgx.TxManager.Do: %w", err)
+	}
+	err = tr.Commit(ctx)
+	if err != nil {
+		return fmt.Errorf("pgx.TxManager.Commit: %w", err)
+	}
+	return nil
+}

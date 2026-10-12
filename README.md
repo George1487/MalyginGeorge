@@ -1,45 +1,60 @@
-# TripGo — репозиторий для лабораторных работ
+# Trip service
 
-Заготовка курса «Разработка микросервисов на Go». Здесь вы делаете все пять
-работ: каждая следующая продолжает предыдущую, переписывать сервис с нуля не
-нужно.
+HTTP-сервис лабораторной работы №1: создаёт, возвращает и завершает поездки,
+хранит данные в PostgreSQL и поддерживает идемпотентное создание поездки.
 
-## Что делать сразу
+## Локальный запуск
 
-1. **Fork** этого репозитория к себе. Форк нужен, чтобы преподаватели видели
-   список всех работ курса одной страницей.
-2. Заведите модуль:
+Нужны Go 1.26, GNU Make, `tripgoctl` и запущенный кластер курса.
 
 ```bash
-git clone git@github.com:<ваш-логин>/<ваш-репозиторий>.git
-cd <ваш-репозиторий>
-go mod init github.com/<ваш-логин>/<ваш-репозиторий>
+tripgoctl cluster start
+tripgoctl environment start
+tripgoctl connect
+make migrate
+make run
 ```
 
-Путь модуля потом не меняется — иначе придётся править все импорты. Проще всего
-взять адрес своего репозитория, каким бы он ни был.
+Проверка готовности: `curl -i localhost:8080/ready`.
 
-Дальше — [`homework/docs/getting-started.md`](https://github.com/course-go-autumn-2026/course/blob/main/homework/docs/getting-started.md)
-в репозитории курса: инструменты, окружение, миграции, вид сданной работы.
+Основные команды: `make migrate`, `make migrate-down`, `make generate`,
+`make build`, `make run`.
 
-## Где что лежит
+## Переменные окружения
 
-| Что | Где |
+| Переменная | Назначение |
 |---|---|
-| Задания, документация, контракты | [`course-go-autumn-2026/course`](https://github.com/course-go-autumn-2026/course) |
-| Слайды и записи лекций | [`lections/`](https://github.com/course-go-autumn-2026/course/tree/main/lections) |
-| Как оценивают, дедлайны, порядок сдачи | [`homework/docs/grading.md`](https://github.com/course-go-autumn-2026/course/blob/main/homework/docs/grading.md) |
-| Локальное окружение и утилита `tripgoctl` | [`course-go-autumn-2026/course-infra`](https://github.com/course-go-autumn-2026/course-infra) |
+| `HTTP_ADDR` | адрес HTTP-сервера |
+| `LOG_LEVEL` | уровень логирования |
+| `SHUTDOWN_TIMEOUT` | общий таймаут остановки |
+| `IDEMPOTENCY_TTL` | срок хранения ключа идемпотентности |
+| `DATABASE_URL` | строка подключения PostgreSQL |
+| `DATABASE_MAX_CONNS` / `DATABASE_MIN_CONNS` | границы пула |
+| `DATABASE_MAX_CONN_LIFETIME` | срок жизни соединения |
+| `DATABASE_CONNECT_TIMEOUT` | таймаут подключения |
+| `DATABASE_QUERY_TIMEOUT` | таймаут запроса к БД |
 
-Задания появляются по мере курса, каждое — после своей пары лекций.
+## Решения
 
-## Как сдавать
+- Транзакции используют `Read Committed`: уникальные ограничения и блокировка
+  строки обеспечивают нужную конкурентную корректность без более строгой
+  изоляции. Менеджер кладёт `pgx.Tx` в `context`, откатывает её при ошибке или
+  панике и переиспользует при вложенном `Do`.
+- Две активные поездки одного водителя запрещены частичным уникальным индексом
+  `trips_one_active_per_driver_idx`. Завершение сериализуется через
+  `SELECT ... FOR UPDATE`.
+- `Idempotency-Key` хранится 24 часа по умолчанию. Middleware берёт
+  транзакционную advisory lock, сравнивает SHA-256 тела и сохраняет HTTP-ответ в
+  той же транзакции, что поездку и историю. Повтор возвращает ту же поездку с
+  `200`, другое тело — `409 idempotency_conflict`.
 
-Ветка `homework/NN` от `main`, pull request в `main` своего форка, ссылка
-ментору до дедлайна. Подробно — в `grading.md` репозитория курса.
+## Docker
 
-## Чужие работы
+```bash
+docker compose -f deploy/compose.yaml up --build
+curl -i localhost:8080/ready
+docker compose -f deploy/compose.yaml down
+```
 
-Форки видны всем, включая ваши. Смотреть чужие решения, пока идёт курс, —
-плохая идея: одинаковый код виден сразу, а разбираться на защите придётся
-самому.
+Runtime-образ основан на distroless, содержит только бинарник и запускается от
+пользователя `65532`. Размер собранного образа по `docker image ls` — 21,1 МБ.

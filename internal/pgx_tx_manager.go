@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -20,7 +21,6 @@ func NewPgxTxManager(pool *pgxpool.Pool) *PgxTxManager {
 type txKey struct{}
 
 func (txm *PgxTxManager) Do(ctx context.Context, fn func(ctx context.Context) error) error {
-
 	_, ok := ctx.Value(txKey{}).(pgx.Tx)
 	if ok {
 		return fn(ctx)
@@ -33,7 +33,9 @@ func (txm *PgxTxManager) Do(ctx context.Context, fn func(ctx context.Context) er
 	defer func() {
 		p := recover()
 		if p != nil {
-			var _ = tr.Rollback(ctx)
+			rollbackCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			_ = tr.Rollback(rollbackCtx)
 			panic(p)
 		}
 	}()

@@ -34,6 +34,40 @@ make run
 | `DATABASE_CONNECT_TIMEOUT` | таймаут подключения |
 | `DATABASE_QUERY_TIMEOUT` | таймаут запроса к БД |
 
+## Архитектура
+
+Проект построен по слоистой архитектуре с изоляцией домена и соблюдением принципа инверсии зависимостей (Dependency Inversion):
+
+1. **Доменный слой (`internal/domain`)**:
+   - Содержит бизнес-сущность `Trip`, статусы и методы переходов (`Finish(time.Time)`).
+   - Инкапсулирует доменные ошибки (`ErrTripNotFound`, `ErrTripCompleted`, `ErrDriverBusy`, `ErrInvalidRequest`, `ErrIdempotencyConflict`, `ValidationError`).
+   - Полностью изолирован от внешних инфраструктурных пакетов (`net/http`, `pgx`, `chi` и т.д.).
+
+2. **Слой бизнес-логики / сценариев (`internal/usecase`)**:
+   - Организован по паттерну «package per action»: `create`, `get`, `finish`.
+   - Определяет интерфейсы потребителя (consumer-defined interfaces) для доступа к данным (`tripRepository`, `tripHistoryRepository`, `txManager`, `metricsRecorder`).
+   - Управляет выполнением бизнес-правил, вызовом метрик и фиксацией транзакций.
+
+3. **Слой репозиториев (`internal/repository`)**:
+   - Реализует хранение данных в PostgreSQL (`trip`, `idempotency`).
+   - Использует `pgxpool` и построитель запросов `squirrel`.
+   - Поддерживает прозрачную работу с транзакциями через `TxFromContext(ctx)`.
+
+4. **HTTP-транспорт (`internal/http`)**:
+   - Хендлеры действий: `create`, `get`, `finish`.
+   - Единый обработчик и маппер доменных ошибок `domainerror` в формат RFC 7807 (`api.Problem`).
+   - Middleware: `Recover`, `Tracing`, `Logging`, `Metrics`, `Timeout`, `Idempotency`.
+   - Порядок middleware строго фиксирован: `Recover -> Tracing -> Logging -> Metrics -> router`.
+
+5. **Инфраструктура и Observability (`internal/infra`)**:
+   - `internal/infra/telemetry`: настройка OpenTelemetry SDK (OTLP экспортеры трейсов и метрик, W3C Trace Context).
+   - Сбор 5 обязательных метрик: `http.server.request.duration`, `http.server.active_requests`, `db.client.operation.duration`, `tripgo.trips.created`, `tripgo.trips.completed`.
+   - `slog` JSON в stdout с автоматической корреляцией трейсов (`trace_id`, `span_id`).
+   - Трейсинг базы данных через `otelpgx`.
+
+6. **Контейнер зависимостей (`internal/container`)**:
+   - Ручное внедрение зависимостей (manual DI) без использования сторонних DI-фреймворков.
+
 ## Решения
 
 - Транзакции используют `Read Committed`: уникальные ограничения и блокировка

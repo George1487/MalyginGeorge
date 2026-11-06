@@ -1,4 +1,4 @@
-package internal
+package transaction
 
 import (
 	"context"
@@ -18,10 +18,15 @@ func NewPgxTxManager(pool *pgxpool.Pool) *PgxTxManager {
 	return &PgxTxManager{pool: pool}
 }
 
-type txKey struct{}
+type TxKey struct{}
+
+func TxFromContext(ctx context.Context) (pgx.Tx, bool) {
+	tx, ok := ctx.Value(TxKey{}).(pgx.Tx)
+	return tx, ok
+}
 
 func (txm *PgxTxManager) Do(ctx context.Context, fn func(ctx context.Context) error) error {
-	_, ok := ctx.Value(txKey{}).(pgx.Tx)
+	_, ok := TxFromContext(ctx)
 	if ok {
 		return fn(ctx)
 	}
@@ -40,7 +45,7 @@ func (txm *PgxTxManager) Do(ctx context.Context, fn func(ctx context.Context) er
 		}
 	}()
 
-	err = fn(context.WithValue(ctx, txKey{}, tr))
+	err = fn(context.WithValue(ctx, TxKey{}, tr))
 	if err != nil {
 		rbErr := tr.Rollback(ctx)
 		if rbErr != nil {

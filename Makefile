@@ -3,7 +3,7 @@ include .env
 export
 endif
 
-.PHONY: migrate migrate-up migrate-down migrate-status generate run build test
+.PHONY: migrate migrate-up migrate-down migrate-status generate run build test test-integration lint
 
 migrate: migrate-up
 
@@ -29,5 +29,11 @@ run:
 build:
 	go build ./...
 
+lint:
+	golangci-lint run
+
 test:
-	go test -race -count=2 ./...
+	go test -coverprofile=coverage.out ./internal/domain/... ./internal/usecase/...
+
+test-integration:
+	go test -tags=integration ./...
